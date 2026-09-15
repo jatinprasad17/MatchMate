@@ -6,7 +6,7 @@ from urllib.parse import urlencode
 
 import requests
 from cryptography.fernet import Fernet
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
@@ -14,6 +14,7 @@ from db import get_supabase_client
 from extraction import extract_follows
 from fetch_f1 import fetch_f1_races
 from fetch_football import fetch_football_matches
+from graph import app as digest_app
 from teams_data import TEAMS_BY_SPORT
 
 app = FastAPI()
@@ -130,6 +131,18 @@ def get_follows(user_id: str):
 
     response = supabase.table("follows").select("*").eq("user_id", user_id).execute()
     return response.data or []
+
+
+@app.delete("/follows/{follow_id}")
+def delete_follow(follow_id: str):
+    supabase = get_supabase_client()
+    follow_check = supabase.table("follows").select("id").eq("id", follow_id).execute()
+
+    if not follow_check.data:
+        raise HTTPException(status_code=404, detail="Follow not found")
+
+    supabase.table("follows").delete().eq("id", follow_id).execute()
+    return {"status": "deleted", "follow_id": follow_id}
 
 
 @app.get("/matches/{user_id}")
@@ -340,6 +353,41 @@ def get_teams(sport: str = Query(...)):
     return {"sport": sport, "teams": TEAMS_BY_SPORT[sport]}
 
 
+@app.post("/run-weekly-digest")
+def run_weekly_digest(x_cron_secret: str | None = Header(default=None)):
+    cron_secret = os.getenv("CRON_SECRET")
+    if not cron_secret or x_cron_secret != cron_secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    supabase = get_supabase_client()
+    users_response = supabase.table("users").select("id").execute()
+    user_ids = [user["id"] for user in users_response.data or []]
+    failures = []
+    succeeded = 0
+
+    for user_id in user_ids:
+        try:
+            digest_app.invoke(
+                {
+                    "user_id": user_id,
+                    "matches": [],
+                    "results": [],
+                    "digest_text": "",
+                }
+            )
+            succeeded += 1
+        except Exception as error:
+            logger.exception("Weekly digest failed for user %s", user_id)
+            failures.append({"user_id": user_id, "error": str(error)})
+
+    return {
+        "total_users": len(user_ids),
+        "succeeded": succeeded,
+        "failed": len(failures),
+        "failures": failures,
+    }
+
+
 def get_fernet() -> Fernet:
     key = os.getenv("FERNET_KEY")
     if not key:
@@ -372,7 +420,7 @@ def google_oauth_start(user_id: str):
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": "openid email https://www.googleapis.com/auth/calendar.events",
+        "scope": "openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.send",
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
