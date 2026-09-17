@@ -1,0 +1,16 @@
+ :root {
+   --bg: #F3EBDD;
+   --surface: #FAF5EC;
+   --border: #D9CBB2;
+   --text: #3E2E22;
+   --text-muted: #8A7860;
+   --accent: #6B4A34;
+   --accent-text: #FAF5EC;
+ }
+ 
+ body {
+  background: var(--bg);
+  color: var(--text);
+  margin: 0;
+  font-family: sans-serif;
+}

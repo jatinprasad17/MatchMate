@@ -8,6 +8,7 @@ import requests
 from cryptography.fernet import Fernet
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from db import get_supabase_client
@@ -18,6 +19,12 @@ from graph import app as digest_app
 from teams_data import TEAMS_BY_SPORT
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["*"],
+)
 logger = logging.getLogger(__name__)
 
 OAUTH_STATE_BY_USER: dict[str, str] = {}
@@ -400,12 +407,7 @@ def encrypt_value(value: str) -> str:
 
 
 @app.get("/auth/google/start")
-def google_oauth_start(user_id: str):
-    supabase = get_supabase_client()
-    user_check = supabase.table("users").select("id").eq("id", user_id).execute()
-    if not user_check.data:
-        raise HTTPException(status_code=404, detail="User not found")
-
+def google_oauth_start():
     client_id = os.getenv("GOOGLE_CLIENT_ID")
     redirect_uri = os.getenv("GOOGLE_REDIRECT_URI")
 
@@ -413,8 +415,7 @@ def google_oauth_start(user_id: str):
         raise HTTPException(status_code=500, detail="Google OAuth environment variables are not configured")
 
     state = secrets.token_urlsafe(32)
-    OAUTH_STATE_BY_USER[user_id] = state
-    STATE_TO_USER[state] = user_id
+    STATE_TO_USER[state] = ""
 
     params = {
         "client_id": client_id,
@@ -438,14 +439,8 @@ def google_oauth_callback(code: str | None = None, state: str | None = None, err
     if not state:
         raise HTTPException(status_code=400, detail="State is required")
 
-    user_id = STATE_TO_USER.get(state)
-    if not user_id:
+    if state not in STATE_TO_USER:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
-
-    supabase = get_supabase_client()
-    user_check = supabase.table("users").select("id").eq("id", user_id).execute()
-    if not user_check.data:
-        raise HTTPException(status_code=404, detail="User not found")
 
     client_id = os.getenv("GOOGLE_CLIENT_ID")
     client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
@@ -475,6 +470,29 @@ def google_oauth_callback(code: str | None = None, state: str | None = None, err
     if not access_token or not refresh_token or not expires_in:
         raise HTTPException(status_code=502, detail="Google OAuth response was missing tokens")
 
+    userinfo_response = requests.get(
+        "https://www.googleapis.com/oauth2/v2/userinfo",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=30,
+    )
+    if userinfo_response.status_code != 200:
+        raise HTTPException(status_code=502, detail="Failed to fetch Google user information")
+
+    email = userinfo_response.json().get("email")
+    if not email:
+        raise HTTPException(status_code=502, detail="Google user information did not include an email")
+
+    supabase = get_supabase_client()
+    existing_user_response = supabase.table("users").select("id").eq("email", email).execute()
+    is_new_user = not existing_user_response.data
+    if is_new_user:
+        new_user_response = supabase.table("users").insert({"email": email}).execute()
+        if not new_user_response.data:
+            raise HTTPException(status_code=500, detail="Failed to create user")
+        user_id = new_user_response.data[0]["id"]
+    else:
+        user_id = existing_user_response.data[0]["id"]
+
     expires_at = datetime.utcnow() + timedelta(seconds=int(expires_in))
     encrypted_access = encrypt_value(access_token)
     encrypted_refresh = encrypt_value(refresh_token)
@@ -500,6 +518,9 @@ def google_oauth_callback(code: str | None = None, state: str | None = None, err
     if not insert_response.data:
         raise HTTPException(status_code=500, detail="Failed to store Google OAuth tokens")
 
-    return {"status": "ok", "user_id": user_id}
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    return RedirectResponse(
+        f"{frontend_url}/auth/success?user_id={user_id}&is_new_user={str(is_new_user).lower()}"
+    )
 
 
