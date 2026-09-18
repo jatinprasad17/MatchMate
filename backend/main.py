@@ -6,7 +6,7 @@ from urllib.parse import urlencode
 
 import requests
 from cryptography.fernet import Fernet
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import Cookie, FastAPI, Header, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -29,10 +29,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 logger = logging.getLogger(__name__)
-
-OAUTH_STATE_BY_USER: dict[str, str] = {}
-STATE_TO_USER: dict[str, str] = {}
-
 
 class FollowCreate(BaseModel):
     user_id: str
@@ -418,7 +414,6 @@ def google_oauth_start():
         raise HTTPException(status_code=500, detail="Google OAuth environment variables are not configured")
 
     state = secrets.token_urlsafe(32)
-    STATE_TO_USER[state] = ""
 
     params = {
         "client_id": client_id,
@@ -430,11 +425,25 @@ def google_oauth_start():
         "state": state,
     }
     google_auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
-    return RedirectResponse(url=google_auth_url)
+    response = RedirectResponse(url=google_auth_url)
+    response.set_cookie(
+        key="oauth_state",
+        value=state,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=10 * 60,
+    )
+    return response
 
 
 @app.get("/auth/google/callback")
-def google_oauth_callback(code: str | None = None, state: str | None = None, error: str | None = None):
+def google_oauth_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    oauth_state: str | None = Cookie(default=None),
+):
     if error:
         raise HTTPException(status_code=400, detail=f"Google OAuth error: {error}")
     if not code:
@@ -442,7 +451,7 @@ def google_oauth_callback(code: str | None = None, state: str | None = None, err
     if not state:
         raise HTTPException(status_code=400, detail="State is required")
 
-    if state not in STATE_TO_USER:
+    if not oauth_state or not secrets.compare_digest(state, oauth_state):
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
     client_id = os.getenv("GOOGLE_CLIENT_ID")
@@ -515,15 +524,14 @@ def google_oauth_callback(code: str | None = None, state: str | None = None, err
         .execute()
     )
 
-    OAUTH_STATE_BY_USER.pop(user_id, None)
-    STATE_TO_USER.pop(state, None)
-
     if not insert_response.data:
         raise HTTPException(status_code=500, detail="Failed to store Google OAuth tokens")
 
     frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
-    return RedirectResponse(
+    response = RedirectResponse(
         f"{frontend_url}/auth/success?user_id={user_id}&is_new_user={str(is_new_user).lower()}"
     )
+    response.delete_cookie("oauth_state", secure=True, samesite="lax")
+    return response
 
 
