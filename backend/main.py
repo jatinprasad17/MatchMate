@@ -21,7 +21,10 @@ from teams_data import TEAMS_BY_SPORT
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "https://matchmate-frontend.onrender.com",
+    ],
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
