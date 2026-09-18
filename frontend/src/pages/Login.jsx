@@ -23,7 +23,7 @@ function Login() {
       <button
         type="button"
         onClick={() => {
-          window.location.href = 'http://localhost:8000/auth/google/start'
+          window.location.href = `${import.meta.env.VITE_API_URL}/auth/google/start`
         }}
         style={{
           background: 'var(--accent)',

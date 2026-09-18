@@ -3,7 +3,7 @@ import { Circle, Gauge } from 'lucide-react'
 import Nav from '../components/Nav.jsx'
 import formatDate from '../utils/formatDate.js'
 
-const API_URL = 'http://localhost:8000'
+const API_URL = import.meta.env.VITE_API_URL
 
 function Home() {
   const userId = localStorage.getItem('matchmate_user_id') || ''

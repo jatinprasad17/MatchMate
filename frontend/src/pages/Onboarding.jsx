@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 
-const API_URL = 'http://localhost:8000'
+const API_URL = import.meta.env.VITE_API_URL
 
 function Onboarding() {
   const userId = localStorage.getItem('matchmate_user_id') || ''
